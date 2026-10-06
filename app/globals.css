@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Inter, sans-serif;
+  color-scheme: dark;
+}
+
+html, body { height: 100%; }
+
+body {
+  background: #07070b;
+  color: #e7e7ee;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.14); }
+
+/* Selection */
+::selection { background: rgba(124,109,242,0.35); }
+
+/* Utility */
+.glass {
+  background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+  border: 1px solid rgba(255,255,255,0.08);
+  backdrop-filter: blur(14px);
+}
+.glow-ring {
+  box-shadow: 0 0 0 1px rgba(124,109,242,0.35), 0 12px 60px -12px rgba(124,109,242,0.55);
+}
+
+/* Prose overrides for chat markdown */
+.zesta-prose p { margin: 0.5em 0; }
+.zesta-prose ul, .zesta-prose ol { margin: 0.5em 0 0.5em 1.2em; }
+.zesta-prose li { margin: 0.15em 0; }
+.zesta-prose h1, .zesta-prose h2, .zesta-prose h3 { margin: 0.9em 0 0.4em; font-weight: 600; }
+.zesta-prose a { color: #9b8ffa; text-decoration: underline; text-underline-offset: 3px; }
+.zesta-prose blockquote {
+  border-left: 2px solid rgba(124,109,242,0.6);
+  padding-left: 0.8em; color: #8a8a9a; margin: 0.6em 0;
+}
+.zesta-prose code:not(pre code) {
+  background: rgba(255,255,255,0.06);
+  padding: 0.12em 0.4em; border-radius: 4px; font-size: 0.9em;
+}
