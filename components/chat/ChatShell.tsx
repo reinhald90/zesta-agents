@@ -7,9 +7,13 @@ import { Composer } from './Composer';
 import { MessageBubble, type ChatMsg } from './MessageBubble';
 import { ActivityCard } from './ActivityCard';
 import type { AgentStreamEvent, ActivityEvent } from '@/zesta/core/agent';
-import { findModel } from '@/lib/ai/models';
 
-interface Conversation { id: string; title: string; updatedAt: number; messages: ChatMsg[] }
+interface Conversation {
+  id: string;
+  title: string;
+  updatedAt: number;
+  messages: ChatMsg[];
+}
 
 const STORAGE_KEY = 'zesta.conversations.v1';
 
@@ -19,10 +23,12 @@ export function ChatShell() {
   const [busy, setBusy] = useState(false);
   const [activities, setActivities] = useState<ActivityEvent[]>([]);
   const [streamText, setStreamText] = useState('');
+  const [modelLabel, setModelLabel] = useState('Loading…');
+
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  /* ─── Load / persist ─────────────────────────────────────────── */
+  /* ─── Load conversations dari localStorage ─────────────────── */
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -31,27 +37,54 @@ export function ChatShell() {
         setConversations(parsed);
         if (parsed[0]) setActiveId(parsed[0].id);
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore corrupt data */
+    }
   }, []);
 
+  /* ─── Persist conversations ───────────────────────────────── */
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations));
   }, [conversations]);
 
-  /* ─── Helpers ────────────────────────────────────────────────── */
-  const active = useMemo(() => conversations.find(c => c.id === activeId) ?? null, [conversations, activeId]);
-
-  const meta: ConversationMeta[] = conversations.map(c => ({ id: c.id, title: c.title, updatedAt: c.updatedAt }));
-  const modelLabel = useMemo(() => {
-    const provider = process.env.NEXT_PUBLIC_DEFAULT_PROVIDER ?? 'mock';
-    const m = findModel(provider === 'openai' ? 'gpt-4o-mini' : provider === 'gemini' ? 'gemini-2.0-flash' : 'claude-3-5-sonnet-latest');
-    return m?.label ?? 'Auto';
+  /* ─── Fetch model info dari server ────────────────────────── */
+  useEffect(() => {
+    let mounted = true;
+    fetch('/api/config')
+      .then((r) => r.json())
+      .then((d: { label?: string }) => {
+        if (mounted) setModelLabel(d.label ?? 'Auto');
+      })
+      .catch(() => {
+        if (mounted) setModelLabel('Auto');
+      });
+    return () => {
+      mounted = false;
+    };
   }, []);
 
+  /* ─── Derived ─────────────────────────────────────────────── */
+  const active = useMemo(
+    () => conversations.find((c) => c.id === activeId) ?? null,
+    [conversations, activeId],
+  );
+
+  const meta: ConversationMeta[] = conversations.map((c) => ({
+    id: c.id,
+    title: c.title,
+    updatedAt: c.updatedAt,
+  }));
+
+  /* ─── Actions ─────────────────────────────────────────────── */
   const newChat = useCallback(() => {
     const id = nanoid(10);
-    const conv: Conversation = { id, title: 'New Chat', updatedAt: Date.now(), messages: [] };
-    setConversations(prev => [conv, ...prev]);
+    const conv: Conversation = {
+      id,
+      title: 'New Chat',
+      updatedAt: Date.now(),
+      messages: [],
+    };
+    setConversations((prev) => [conv, ...prev]);
     setActiveId(id);
     setActivities([]);
     setStreamText('');
@@ -64,8 +97,8 @@ export function ChatShell() {
   }, []);
 
   const deleteChat = useCallback((id: string) => {
-    setConversations(prev => prev.filter(c => c.id !== id));
-    setActiveId(prev => (prev === id ? null : prev));
+    setConversations((prev) => prev.filter((c) => c.id !== id));
+    setActiveId((prev) => (prev === id ? null : prev));
   }, []);
 
   const stop = useCallback(() => {
@@ -74,104 +107,146 @@ export function ChatShell() {
     setBusy(false);
   }, []);
 
-  /* ─── Send ───────────────────────────────────────────────────── */
-  const send = useCallback(async (text: string) => {
-    if (busy) return;
+  /* ─── Send message ────────────────────────────────────────── */
+  const send = useCallback(
+    async (text: string) => {
+      if (busy) return;
 
-    let convId = activeId;
-    if (!convId) {
-      convId = nanoid(10);
-      const conv: Conversation = {
-        id: convId, title: text.slice(0, 40), updatedAt: Date.now(),
-        messages: [],
-      };
-      setConversations(prev => [conv, ...prev]);
-      setActiveId(convId);
-    }
+      let convId = activeId;
+      if (!convId) {
+        convId = nanoid(10);
+        const conv: Conversation = {
+          id: convId,
+          title: text.slice(0, 40),
+          updatedAt: Date.now(),
+          messages: [],
+        };
+        setConversations((prev) => [conv, ...prev]);
+        setActiveId(convId);
+      }
 
-    const userMsg: ChatMsg = { id: nanoid(8), role: 'user', content: text };
-    setConversations(prev => prev.map(c => c.id === convId!
-      ? { ...c, title: c.messages.length === 0 ? text.slice(0, 40) : c.title, updatedAt: Date.now(), messages: [...c.messages, userMsg] }
-      : c));
+      const userMsg: ChatMsg = { id: nanoid(8), role: 'user', content: text };
 
-    const history = (conversations.find(c => c.id === convId)?.messages ?? [])
-      .concat(userMsg)
-      .map(m => ({ role: m.role, content: m.content }));
+      // snapshot untuk request body (sebelum state update async)
+      const prevMessages = conversations.find((c) => c.id === convId)?.messages ?? [];
+      const history = [...prevMessages, userMsg].map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
 
-    setBusy(true);
-    setActivities([]);
-    setStreamText('');
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === convId!
+            ? {
+                ...c,
+                title: c.messages.length === 0 ? text.slice(0, 40) : c.title,
+                updatedAt: Date.now(),
+                messages: [...c.messages, userMsg],
+              }
+            : c,
+        ),
+      );
 
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
+      setBusy(true);
+      setActivities([]);
+      setStreamText('');
 
-    let assistantText = '';
-    try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history }),
-        signal: ctrl.signal,
-      });
-      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
+      let assistantText = '';
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages: history }),
+          signal: ctrl.signal,
+        });
+        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
-        let idx: number;
-        while ((idx = buffer.indexOf('\n\n')) !== -1) {
-          const raw = buffer.slice(0, idx).trim();
-          buffer = buffer.slice(idx + 2);
-          if (!raw.startsWith('data:')) continue;
-          const payload = raw.slice(5).trim();
-          if (!payload) continue;
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-          let evt: AgentStreamEvent;
-          try { evt = JSON.parse(payload); } catch { continue; }
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
 
-          if (evt.type === 'activity' && evt.activity) {
-            setActivities(prev => [...prev, evt.activity!]);
-          } else if (evt.type === 'text' && evt.delta) {
-            assistantText += evt.delta;
-            setStreamText(assistantText);
-          } else if (evt.type === 'error') {
-            assistantText = `⚠️ ${evt.error}`;
-            setStreamText(assistantText);
-          } else if (evt.type === 'done') {
-            break;
+          let idx: number;
+          while ((idx = buffer.indexOf('\n\n')) !== -1) {
+            const raw = buffer.slice(0, idx).trim();
+            buffer = buffer.slice(idx + 2);
+            if (!raw.startsWith('data:')) continue;
+            const payload = raw.slice(5).trim();
+            if (!payload) continue;
+
+            let evt: AgentStreamEvent;
+            try {
+              evt = JSON.parse(payload);
+            } catch {
+              continue;
+            }
+
+            if (evt.type === 'activity' && evt.activity) {
+              setActivities((prev) => [...prev, evt.activity!]);
+            } else if (evt.type === 'text' && evt.delta) {
+              assistantText += evt.delta;
+              setStreamText(assistantText);
+            } else if (evt.type === 'error') {
+              assistantText = `⚠️ ${evt.error}`;
+              setStreamText(assistantText);
+            } else if (evt.type === 'done') {
+              break;
+            }
           }
         }
-      }
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        assistantText = assistantText || `⚠️ ${(err as Error).message}`;
-      }
-    } finally {
-      abortRef.current = null;
-      setBusy(false);
+      } catch (err) {
+        if ((err as Error).name !== 'AbortError') {
+          assistantText =
+            assistantText || `⚠️ ${(err as Error).message}`;
+        }
+      } finally {
+        abortRef.current = null;
+        setBusy(false);
 
-      if (assistantText) {
-        const botMsg: ChatMsg = { id: nanoid(8), role: 'assistant', content: assistantText };
-        setConversations(prev => prev.map(c => c.id === convId!
-          ? { ...c, updatedAt: Date.now(), messages: [...c.messages, botMsg] }
-          : c));
+        if (assistantText) {
+          const botMsg: ChatMsg = {
+            id: nanoid(8),
+            role: 'assistant',
+            content: assistantText,
+          };
+          setConversations((prev) =>
+            prev.map((c) =>
+              c.id === convId!
+                ? {
+                    ...c,
+                    updatedAt: Date.now(),
+                    messages: [...c.messages, botMsg],
+                  }
+                : c,
+            ),
+          );
+        }
+        setStreamText('');
+        setTimeout(() => {
+          scrollRef.current?.scrollTo({
+            top: scrollRef.current.scrollHeight,
+            behavior: 'smooth',
+          });
+        }, 30);
       }
-      setStreamText('');
-      setTimeout(() => scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }), 30);
-    }
-  }, [activeId, busy, conversations]);
+    },
+    [activeId, busy, conversations],
+  );
 
-  /* ─── Auto-scroll ────────────────────────────────────────────── */
+  /* ─── Auto-scroll ─────────────────────────────────────────── */
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [active?.messages.length, streamText, activities.length]);
 
+  /* ─── Render ──────────────────────────────────────────────── */
   return (
     <div className="flex h-[100dvh] w-full">
       <Sidebar
@@ -201,17 +276,27 @@ export function ChatShell() {
             {(!active || active.messages.length === 0) && !streamText && (
               <EmptyState onPick={(t) => send(t)} />
             )}
-            {active?.messages.map(m => <MessageBubble key={m.id} msg={m} />)}
+
+            {active?.messages.map((m) => (
+              <MessageBubble key={m.id} msg={m} />
+            ))}
 
             {(activities.length > 0 || streamText) && (
               <div className="flex flex-col gap-2">
                 <div className="flex flex-wrap gap-2">
                   {activities.map((a, i) => (
-                    <ActivityCard key={i} kind={a.kind} label={a.label} live={busy && i === activities.length - 1} />
+                    <ActivityCard
+                      key={i}
+                      kind={a.kind}
+                      label={a.label}
+                      live={busy && i === activities.length - 1}
+                    />
                   ))}
                 </div>
                 {streamText && (
-                  <MessageBubble msg={{ id: 'stream', role: 'assistant', content: streamText }} />
+                  <MessageBubble
+                    msg={{ id: 'stream', role: 'assistant', content: streamText }}
+                  />
                 )}
               </div>
             )}
@@ -224,7 +309,7 @@ export function ChatShell() {
   );
 }
 
-/* ─── Empty state ──────────────────────────────────────────────── */
+/* ─── Empty state ───────────────────────────────────────────── */
 function EmptyState({ onPick }: { onPick: (t: string) => void }) {
   const items = [
     'Zesta, jelaskan apa itu WebSocket.',
@@ -240,7 +325,7 @@ function EmptyState({ onPick }: { onPick: (t: string) => void }) {
       <h2 className="text-xl font-semibold tracking-tight">Halo, aku Zesta.</h2>
       <p className="mt-1 text-sm text-ink-muted">Mulai dengan salah satu contoh ini.</p>
       <div className="mx-auto mt-6 grid max-w-xl grid-cols-1 gap-2 sm:grid-cols-2">
-        {items.map(t => (
+        {items.map((t) => (
           <button
             key={t}
             onClick={() => onPick(t)}
