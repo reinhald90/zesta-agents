@@ -1,7 +1,10 @@
 import { env } from '@/lib/env';
 
 export type Role = 'system' | 'user' | 'assistant';
-export interface ChatMessage { role: Role; content: string }
+export interface ChatMessage {
+  role: Role;
+  content: string;
+}
 
 export interface ChatOptions {
   model?: string;
@@ -41,9 +44,14 @@ export class OpenAICompatibleProvider implements AIProvider {
       }),
     });
     if (!res.ok || !res.body) {
-      throw new Error(`provider ${this.id} failed: ${res.status} ${await res.text().catch(() => '')}`);
+      throw new Error(
+        `provider ${this.id} failed: ${res.status} ${await res.text().catch(() => '')}`,
+      );
     }
-    yield* parseSSE(res.body, (json) => json?.choices?.[0]?.delta?.content as string | undefined);
+    yield* parseSSE(
+      res.body,
+      (json) => json?.choices?.[0]?.delta?.content as string | undefined,
+    );
   }
 }
 
@@ -53,8 +61,12 @@ export class AnthropicProvider implements AIProvider {
   constructor(private apiKey: string, private defaultModel = 'claude-3-5-sonnet-latest') {}
 
   async *chat(messages: ChatMessage[], opts: ChatOptions = {}): AsyncIterable<string> {
-    const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
-    const rest = messages.filter(m => m.role !== 'system');
+    const system = messages
+      .filter((m) => m.role === 'system')
+      .map((m) => m.content)
+      .join('\n\n');
+    const rest = messages.filter((m) => m.role !== 'system');
+
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       signal: opts.signal,
@@ -73,10 +85,14 @@ export class AnthropicProvider implements AIProvider {
       }),
     });
     if (!res.ok || !res.body) {
-      throw new Error(`provider ${this.id} failed: ${res.status} ${await res.text().catch(() => '')}`);
+      throw new Error(
+        `provider ${this.id} failed: ${res.status} ${await res.text().catch(() => '')}`,
+      );
     }
     yield* parseSSE(res.body, (json) => {
-      if (json?.type === 'content_block_delta') return json?.delta?.text as string | undefined;
+      if (json?.type === 'content_block_delta') {
+        return json?.delta?.text as string | undefined;
+      }
       return undefined;
     });
   }
@@ -91,10 +107,16 @@ export class GeminiProvider implements AIProvider {
     const model = opts.model ?? this.defaultModel;
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${this.apiKey}`;
 
-    const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n\n');
+    const system = messages
+      .filter((m) => m.role === 'system')
+      .map((m) => m.content)
+      .join('\n\n');
     const contents = messages
-      .filter(m => m.role !== 'system')
-      .map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
+      .filter((m) => m.role !== 'system')
+      .map((m) => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      }));
 
     const res = await fetch(url, {
       method: 'POST',
@@ -103,28 +125,50 @@ export class GeminiProvider implements AIProvider {
       body: JSON.stringify({
         systemInstruction: system ? { parts: [{ text: system }] } : undefined,
         contents,
-        generationConfig: { temperature: opts.temperature ?? 0.7, maxOutputTokens: opts.maxTokens },
+        generationConfig: {
+          temperature: opts.temperature ?? 0.7,
+          maxOutputTokens: opts.maxTokens,
+        },
       }),
     });
     if (!res.ok || !res.body) {
-      throw new Error(`provider ${this.id} failed: ${res.status} ${await res.text().catch(() => '')}`);
+      throw new Error(
+        `provider ${this.id} failed: ${res.status} ${await res.text().catch(() => '')}`,
+      );
     }
-    yield* parseSSE(res.body, (json) => json?.candidates?.[0]?.content?.parts?.[0]?.text as string | undefined);
+    yield* parseSSE(
+      res.body,
+      (json) => json?.candidates?.[0]?.content?.parts?.[0]?.text as string | undefined,
+    );
   }
 }
 
 /* ─────────── Mock (dev fallback) ─────────── */
 export class MockProvider implements AIProvider {
   readonly id = 'mock';
+
   async *chat(messages: ChatMessage[], opts: ChatOptions = {}): AsyncIterable<string> {
-    const last = [...messages].reverse().find(m => m.role === 'user')?.content ?? '';
-    const reply =
-      `_MockProvider aktif._ Set \`ZESTA_DEFAULT_PROVIDER\` dan API key untuk respons nyata.\n\n` +
-      `**Kamu menulis:**\n\n> ${last.replace(/\n/g, '\n> ')}\n\n` +
-      `Ini contoh blok kode:\n\n\`\`\`ts\nconst greet = (name: string) => \`Halo, \${name}!\`;\nconsole.log(greet('Zesta'));\n\`\`\`\n`;
+    const last = [...messages].reverse().find((m) => m.role === 'user')?.content ?? '';
+
+    const reply = [
+      '_MockProvider aktif._ Set `ZESTA_DEFAULT_PROVIDER` dan API key untuk respons nyata.',
+      '',
+      '**Kamu menulis:**',
+      '',
+      `> ${last.replace(/\n/g, '\n> ')}`,
+      '',
+      'Contoh kode:',
+      '',
+      '```ts',
+      "const greet = (name: string) => 'Halo, ' + name + '!';",
+      "console.log(greet('Zesta'));",
+      '```',
+      '',
+    ].join('\n');
+
     for (const chunk of chunkString(reply, 6)) {
       if (opts.signal?.aborted) return;
-      await new Promise(r => setTimeout(r, 25));
+      await new Promise((r) => setTimeout(r, 25));
       yield chunk;
     }
   }
@@ -156,7 +200,9 @@ async function* parseSSE(
           const json = JSON.parse(payload);
           const text = extract(json);
           if (text) yield text;
-        } catch { /* ignore partial */ }
+        } catch {
+          /* ignore partial json */
+        }
       }
     }
   } finally {
