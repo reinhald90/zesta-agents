@@ -14,11 +14,15 @@ const schema = z.object({
 
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default('gemini-2.0-flash'),
+  GEMINI_EMBEDDING_MODEL: z.string().default('gemini-embedding-001'),
+
+  DATABASE_URL: z.string().optional(),
+  AUTH_SECRET: z.string().optional(),
+  AUTH_URL: z.string().url().optional(),
 });
 
 const parsed = schema.safeParse(process.env);
 if (!parsed.success) {
-  // jangan tampilkan value, hanya field
   console.error('[env] invalid:', parsed.error.flatten().fieldErrors);
   throw new Error('Invalid environment variables');
 }
