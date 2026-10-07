@@ -13,10 +13,12 @@ export type ActivityKind =
 export interface ActivityEvent { kind: ActivityKind; label: string }
 
 export interface AgentStreamEvent {
-  type: 'activity' | 'text' | 'done' | 'error';
+  type: 'activity' | 'text' | 'done' | 'error' | 'conversation';
   activity?: ActivityEvent;
   delta?: string;
   error?: string;
+  id?: string;
+  title?: string;
 }
 
 export interface AgentRunArgs {
