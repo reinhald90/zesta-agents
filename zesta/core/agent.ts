@@ -56,7 +56,10 @@ export class ZestaAgent {
     let researchContext = '';
     if (p.intent === 'research' && !signal?.aborted) {
       try {
-        for await (const evt of research(lastUser, { maxSources: 3, signal })) {
+        for await (const evt of research(lastUser, {
+          maxSources: 3,
+          signal,
+        })) {
           if (evt.type === 'activity') {
             yield {
               type: 'activity',
@@ -107,6 +110,8 @@ export class ZestaAgent {
 
     /* ── Stream dari provider ──────────────────────────────── */
     const provider = getProvider();
+    let streamingFailed = false;
+
     try {
       for await (const delta of provider.chat(finalMessages, {
         signal,
@@ -116,30 +121,48 @@ export class ZestaAgent {
         yield { type: 'text', delta };
       }
     } catch (err) {
+      streamingFailed = true;
       const msg = err instanceof Error ? err.message : 'unknown error';
       console.error('[agent] provider error:', msg);
 
+      /* Fallback: tunjukkan pesan error + konten riset kalau ada */
       if (researchContext) {
-        // Fallback: provider gagal, tapi riset berhasil → tunjukkan hasil mentah
         yield {
           type: 'text',
           delta:
-            '\n\n⚠️ LLM tidak tersedia. Ini hasil riset mentah:\n\n' +
+            '⚠️ **Provider AI gagal.** Tapi riset web berhasil.\n\n' +
+            'Detail error: `' +
+            msg.slice(0, 200) +
+            '`\n\n' +
+            '---\n\n' +
+            '### Hasil riset mentah\n\n' +
             researchContext.slice(0, 2500),
         };
       } else {
         yield {
-          type: 'error',
-          error: 'Provider gagal memberi respons. Coba lagi.',
+          type: 'text',
+          delta:
+            '⚠️ **Provider AI sedang bermasalah.**\n\n' +
+            'Detail: `' +
+            msg.slice(0, 200) +
+            '`\n\n' +
+            'Kemungkinan penyebab:\n' +
+            '- API key Gemini bermasalah\n' +
+            '- Model tidak valid\n' +
+            '- Timeout koneksi\n' +
+            '- Rate limit\n\n' +
+            'Cek **Vercel → Logs → Functions → api/chat** untuk pesan `[agent] provider error` lengkapnya.',
         };
-        return;
       }
     }
 
-    yield {
-      type: 'activity',
-      activity: { kind: 'completed', label: 'Selesai' },
-    };
+    if (!streamingFailed) {
+      yield {
+        type: 'activity',
+        activity: { kind: 'completed', label: 'Selesai' },
+      };
+    }
+
     yield { type: 'done' };
   }
 }
