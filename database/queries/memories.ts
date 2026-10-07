@@ -56,11 +56,11 @@ export async function searchMemoriesByVector(input: {
 
   return sql<Array<MemoryRow & { similarity: number }>>`
     SELECT id, scope, user_id, type, content, source, confidence, relevance, created_at,
-           1 - (embedding <=> ${sql.unsafe(vec)}::vector) AS similarity
+           1 - (embedding <=> ${vec}::vector) AS similarity
     FROM memories
     WHERE ((scope = 'user' AND user_id = ${input.userId}) OR scope = 'global')
       AND embedding IS NOT NULL
-    ORDER BY embedding <=> ${sql.unsafe(vec)}::vector
+    ORDER BY embedding <=> ${vec}::vector
     LIMIT ${limit}
   `;
 }
