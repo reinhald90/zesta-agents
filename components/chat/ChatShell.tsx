@@ -8,16 +8,11 @@ import { MessageBubble, type ChatMsg } from './MessageBubble';
 import { ActivityCard } from './ActivityCard';
 import type { AgentStreamEvent, ActivityEvent } from '@/zesta/core/agent';
 
-interface Conversation {
-  id: string;
-  title: string;
-  updatedAt: number;
+interface Conversation extends ConversationMeta {
   messages: ChatMsg[];
 }
 
-const STORAGE_KEY = 'zesta.conversations.v1';
-
-export function ChatShell() {
+export function ChatShell({ userEmail }: { userEmail?: string | null }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -28,64 +23,60 @@ export function ChatShell() {
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  /* ─── Load conversations dari localStorage ─────────────────── */
+  /* ── Load conversation list ───────────────────────────────── */
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as Conversation[];
-        setConversations(parsed);
-        if (parsed[0]) setActiveId(parsed[0].id);
-      }
-    } catch {
-      /* ignore corrupt data */
-    }
+    fetch('/api/conversations')
+      .then((r) => r.json())
+      .then((d: { conversations?: ConversationMeta[] }) => {
+        const list = d.conversations ?? [];
+        setConversations(list.map((c) => ({ ...c, messages: [] })));
+        if (list[0]) setActiveId(list[0].id);
+      })
+      .catch(() => {});
   }, []);
 
-  /* ─── Persist conversations ───────────────────────────────── */
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations));
-  }, [conversations]);
-
-  /* ─── Fetch model info dari server ────────────────────────── */
+  /* ── Model info ───────────────────────────────────────────── */
   useEffect(() => {
     let mounted = true;
     fetch('/api/config')
       .then((r) => r.json())
-      .then((d: { label?: string }) => {
-        if (mounted) setModelLabel(d.label ?? 'Auto');
-      })
-      .catch(() => {
-        if (mounted) setModelLabel('Auto');
-      });
-    return () => {
-      mounted = false;
-    };
+      .then((d: { label?: string }) => mounted && setModelLabel(d.label ?? 'Auto'))
+      .catch(() => mounted && setModelLabel('Auto'));
+    return () => { mounted = false; };
   }, []);
 
-  /* ─── Derived ─────────────────────────────────────────────── */
+  /* ── Load messages for active conversation ────────────────── */
+  useEffect(() => {
+    if (!activeId) return;
+    const existing = conversations.find((c) => c.id === activeId);
+    if (existing && existing.messages.length > 0) return;
+
+    fetch(`/api/conversations/${activeId}`)
+      .then((r) => r.json())
+      .then((d: { messages?: Array<{ id: string; role: 'user' | 'assistant'; content: string }> }) => {
+        const msgs: ChatMsg[] = (d.messages ?? []).map((m) => ({
+          id: m.id, role: m.role, content: m.content,
+        }));
+        setConversations((prev) =>
+          prev.map((c) => (c.id === activeId ? { ...c, messages: msgs } : c)),
+        );
+      })
+      .catch(() => {});
+  }, [activeId, conversations]);
+
   const active = useMemo(
     () => conversations.find((c) => c.id === activeId) ?? null,
     [conversations, activeId],
   );
 
   const meta: ConversationMeta[] = conversations.map((c) => ({
-    id: c.id,
-    title: c.title,
-    updatedAt: c.updatedAt,
+    id: c.id, title: c.title, updatedAt: c.updatedAt,
   }));
 
-  /* ─── Actions ─────────────────────────────────────────────── */
+  /* ── Actions ─────────────────────────────────────────────── */
   const newChat = useCallback(() => {
-    const id = nanoid(10);
-    const conv: Conversation = {
-      id,
-      title: 'New Chat',
-      updatedAt: Date.now(),
-      messages: [],
-    };
-    setConversations((prev) => [conv, ...prev]);
-    setActiveId(id);
+    // conversation baru dibuat oleh server saat pesan pertama dikirim
+    setActiveId(null);
     setActivities([]);
     setStreamText('');
   }, []);
@@ -96,9 +87,10 @@ export function ChatShell() {
     setStreamText('');
   }, []);
 
-  const deleteChat = useCallback((id: string) => {
+  const deleteChat = useCallback(async (id: string) => {
     setConversations((prev) => prev.filter((c) => c.id !== id));
     setActiveId((prev) => (prev === id ? null : prev));
+    await fetch(`/api/conversations/${id}`, { method: 'DELETE' }).catch(() => {});
   }, []);
 
   const stop = useCallback(() => {
@@ -107,45 +99,35 @@ export function ChatShell() {
     setBusy(false);
   }, []);
 
-  /* ─── Send message ────────────────────────────────────────── */
+  /* ── Send ────────────────────────────────────────────────── */
   const send = useCallback(
     async (text: string) => {
       if (busy) return;
 
+      const localId = nanoid(8);
+      const userMsg: ChatMsg = { id: localId, role: 'user', content: text };
+
+      // Optimistic: tampilkan user msg di conversation aktif
       let convId = activeId;
       if (!convId) {
-        convId = nanoid(10);
-        const conv: Conversation = {
+        convId = `pending-${localId}`;
+        const placeholder: Conversation = {
           id: convId,
           title: text.slice(0, 40),
           updatedAt: Date.now(),
-          messages: [],
+          messages: [userMsg],
         };
-        setConversations((prev) => [conv, ...prev]);
+        setConversations((prev) => [placeholder, ...prev]);
         setActiveId(convId);
+      } else {
+        setConversations((prev) =>
+          prev.map((c) =>
+            c.id === convId
+              ? { ...c, title: c.messages.length === 0 ? text.slice(0, 40) : c.title, messages: [...c.messages, userMsg] }
+              : c,
+          ),
+        );
       }
-
-      const userMsg: ChatMsg = { id: nanoid(8), role: 'user', content: text };
-
-      // snapshot untuk request body (sebelum state update async)
-      const prevMessages = conversations.find((c) => c.id === convId)?.messages ?? [];
-      const history = [...prevMessages, userMsg].map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
-
-      setConversations((prev) =>
-        prev.map((c) =>
-          c.id === convId!
-            ? {
-                ...c,
-                title: c.messages.length === 0 ? text.slice(0, 40) : c.title,
-                updatedAt: Date.now(),
-                messages: [...c.messages, userMsg],
-              }
-            : c,
-        ),
-      );
 
       setBusy(true);
       setActivities([]);
@@ -155,12 +137,16 @@ export function ChatShell() {
       abortRef.current = ctrl;
 
       let assistantText = '';
+      let realConversationId: string | null = activeId;
 
       try {
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages: history }),
+          body: JSON.stringify({
+            conversationId: activeId ?? undefined,
+            message: text,
+          }),
           signal: ctrl.signal,
         });
         if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -183,13 +169,20 @@ export function ChatShell() {
             if (!payload) continue;
 
             let evt: AgentStreamEvent;
-            try {
-              evt = JSON.parse(payload);
-            } catch {
-              continue;
-            }
+            try { evt = JSON.parse(payload); } catch { continue; }
 
-            if (evt.type === 'activity' && evt.activity) {
+            if (evt.type === 'conversation' && evt.id) {
+              realConversationId = evt.id;
+              // Rename placeholder → id asli dari server
+              setConversations((prev) =>
+                prev.map((c) =>
+                  c.id === convId
+                    ? { ...c, id: evt.id!, title: evt.title ?? c.title }
+                    : c,
+                ),
+              );
+              setActiveId(evt.id);
+            } else if (evt.type === 'activity' && evt.activity) {
               setActivities((prev) => [...prev, evt.activity!]);
             } else if (evt.type === 'text' && evt.delta) {
               assistantText += evt.delta;
@@ -204,27 +197,20 @@ export function ChatShell() {
         }
       } catch (err) {
         if ((err as Error).name !== 'AbortError') {
-          assistantText =
-            assistantText || `⚠️ ${(err as Error).message}`;
+          assistantText = assistantText || `⚠️ ${(err as Error).message}`;
         }
       } finally {
         abortRef.current = null;
         setBusy(false);
 
-        if (assistantText) {
+        if (assistantText && realConversationId) {
           const botMsg: ChatMsg = {
-            id: nanoid(8),
-            role: 'assistant',
-            content: assistantText,
+            id: nanoid(8), role: 'assistant', content: assistantText,
           };
           setConversations((prev) =>
             prev.map((c) =>
-              c.id === convId!
-                ? {
-                    ...c,
-                    updatedAt: Date.now(),
-                    messages: [...c.messages, botMsg],
-                  }
+              c.id === realConversationId
+                ? { ...c, updatedAt: Date.now(), messages: [...c.messages, botMsg] }
                 : c,
             ),
           );
@@ -232,21 +218,19 @@ export function ChatShell() {
         setStreamText('');
         setTimeout(() => {
           scrollRef.current?.scrollTo({
-            top: scrollRef.current.scrollHeight,
-            behavior: 'smooth',
+            top: scrollRef.current.scrollHeight, behavior: 'smooth',
           });
         }, 30);
       }
     },
-    [activeId, busy, conversations],
+    [activeId, busy],
   );
 
-  /* ─── Auto-scroll ─────────────────────────────────────────── */
+  /* ── Auto-scroll ─────────────────────────────────────────── */
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [active?.messages.length, streamText, activities.length]);
 
-  /* ─── Render ──────────────────────────────────────────────── */
   return (
     <div className="flex h-[100dvh] w-full">
       <Sidebar
@@ -255,6 +239,7 @@ export function ChatShell() {
         onNew={newChat}
         onSelect={selectChat}
         onDelete={deleteChat}
+        userEmail={userEmail}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -309,7 +294,6 @@ export function ChatShell() {
   );
 }
 
-/* ─── Empty state ───────────────────────────────────────────── */
 function EmptyState({ onPick }: { onPick: (t: string) => void }) {
   const items = [
     'Zesta, jelaskan apa itu WebSocket.',
@@ -337,4 +321,4 @@ function EmptyState({ onPick }: { onPick: (t: string) => void }) {
       </div>
     </div>
   );
-}
+                                 }
