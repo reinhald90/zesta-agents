@@ -28,7 +28,12 @@ export async function insertMessage(input: {
   const sql = requireDb();
   const rows = await sql<MessageRow[]>`
     INSERT INTO messages (conversation_id, role, content, meta)
-    VALUES (${input.conversationId}, ${input.role}, ${input.content}, ${sql.json(input.meta ?? {})})
+    VALUES (
+      ${input.conversationId},
+      ${input.role},
+      ${input.content},
+      ${sql.json((input.meta ?? {}) as never)}
+    )
     RETURNING *
   `;
   if (!rows[0]) throw new Error('Gagal menyimpan message.');
