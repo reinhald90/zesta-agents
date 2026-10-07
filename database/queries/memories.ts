@@ -37,7 +37,7 @@ export async function insertMemory(input: {
       ${input.confidence ?? 0.5},
       ${input.relevance ?? 0.5},
       ${vec ? sql`${vec}::vector` : null},
-      ${sql.json(input.meta ?? {})}
+      ${sql.json((input.meta ?? {}) as never)}
     )
     RETURNING id, scope, user_id, type, content, source, confidence, relevance, created_at
   `;
