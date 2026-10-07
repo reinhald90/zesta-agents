@@ -98,19 +98,20 @@ export class AnthropicProvider implements AIProvider {
   }
 }
 
-/* ─────────── Google Gemini ─────────── */
+/* ─────────── Google Gemini (v2.5 & v3.x compatible) ─────────── */
 export class GeminiProvider implements AIProvider {
   readonly id = 'gemini';
-  constructor(private apiKey: string, private defaultModel = 'gemini-2.0-flash') {}
+  constructor(private apiKey: string, private defaultModel = 'gemini-flash-latest') {}
 
   async *chat(messages: ChatMessage[], opts: ChatOptions = {}): AsyncIterable<string> {
     const model = opts.model ?? this.defaultModel;
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${this.apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`;
 
     const system = messages
       .filter((m) => m.role === 'system')
       .map((m) => m.content)
       .join('\n\n');
+
     const contents = messages
       .filter((m) => m.role !== 'system')
       .map((m) => ({
@@ -118,29 +119,59 @@ export class GeminiProvider implements AIProvider {
         parts: [{ text: m.content }],
       }));
 
+    const body: Record<string, unknown> = {
+      contents,
+      generationConfig: {
+        temperature: opts.temperature ?? 0.7,
+        maxOutputTokens: opts.maxTokens ?? 8192,
+      },
+    };
+
+    if (system) {
+      body.systemInstruction = { parts: [{ text: system }] };
+    }
+
     const res = await fetch(url, {
       method: 'POST',
       signal: opts.signal,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: system ? { parts: [{ text: system }] } : undefined,
-        contents,
-        generationConfig: {
-          temperature: opts.temperature ?? 0.7,
-          maxOutputTokens: opts.maxTokens,
-        },
-      }),
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': this.apiKey,
+      },
+      body: JSON.stringify(body),
     });
+
     if (!res.ok || !res.body) {
+      const errBody = await res.text().catch(() => '');
       throw new Error(
-        `provider ${this.id} failed: ${res.status} ${await res.text().catch(() => '')}`,
+        `provider ${this.id} failed: ${res.status} ${errBody.slice(0, 500)}`,
       );
     }
-    yield* parseSSE(
-      res.body,
-      (json) => json?.candidates?.[0]?.content?.parts?.[0]?.text as string | undefined,
-    );
+
+    yield* parseSSE(res.body, extractGeminiText);
   }
+}
+
+/**
+ * Extract text dari response Gemini.
+ * - Gemini 2.x: candidates[0].content.parts[0].text
+ * - Gemini 3.x: bisa ada multiple parts, sebagian bertanda `thought: true`
+ *   (thinking chunks) yang harus di-skip.
+ */
+function extractGeminiText(json: any): string | undefined {
+  const parts = json?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts)) return undefined;
+
+  const texts: string[] = [];
+  for (const p of parts) {
+    if (!p || typeof p !== 'object') continue;
+    if (p.thought === true) continue;        // skip thought chunks
+    if (typeof p.text === 'string' && p.text.length > 0) {
+      texts.push(p.text);
+    }
+  }
+
+  return texts.length > 0 ? texts.join('') : undefined;
 }
 
 /* ─────────── Mock (dev fallback) ─────────── */
@@ -212,4 +243,4 @@ async function* parseSSE(
 
 function* chunkString(s: string, size: number): Iterable<string> {
   for (let i = 0; i < s.length; i += size) yield s.slice(i, i + size);
-}
+      }
